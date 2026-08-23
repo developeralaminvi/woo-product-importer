@@ -6,7 +6,7 @@ Tags: woocommerce, importer, shopify, scraping, products
 Requires at least: 5.8
 Tested up to: 6.7
 Requires PHP: 7.2
-Stable tag: 1.1.0
+Stable tag: 1.2.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -41,6 +41,11 @@ Paste a Shopify collection or WooCommerce category link and import all its produ
 Only import from stores you have permission to use. Respect the source site's Terms of Service and copyright (product images are usually copyrighted). Check your country's laws before re-selling content.
 
 == Changelog ==
+
+= 1.2.0 =
+* NEW: Automatic Multi-Category Extraction & Assignment — products belonging to multiple categories on the source store (Store API / HTML / Shopify) automatically get all their categories created and attached.
+* IMPROVEMENT: Multi-category linking ensures existing products have new categories appended without duplicate products being created.
+* IMPROVEMENT: Persistent tracking with source handle & URL post meta for cross-session deduplication and category linking.
 
 = 1.1.0 =
 * NEW: Full-site mode — paste the store homepage and import ALL categories + ALL products automatically.

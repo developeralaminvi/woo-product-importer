@@ -3,7 +3,7 @@
  * Plugin Name:       Product Importer — URL to WooCommerce
  * Plugin URI:        http://devalamin.me/
  * Description:       Paste a Shopify collection link or a WooCommerce category link and import all its products (images, title, price, description, gallery, SKU) into your WooCommerce store with one click.
- * Version:           1.1.0
+ * Version:           1.2.0
  * Author:            Md Alamin
  * Author URI:        http://devalamin.me/
  * License:           GPL-2.0-or-later
@@ -16,7 +16,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'WPI_VERSION', '1.1.0' );
+define( 'WPI_VERSION', '1.2.0' );
 define( 'WPI_PLUGIN_FILE', __FILE__ );
 define( 'WPI_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'WPI_PLUGIN_URL', plugin_dir_url( __FILE__ ) );

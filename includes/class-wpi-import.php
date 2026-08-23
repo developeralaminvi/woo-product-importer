@@ -6,14 +6,19 @@ defined( 'ABSPATH' ) || exit;
  *
  * Creates WooCommerce products (WC_Product_Simple) from the scraped data,
  * downloads the images into the media library and attaches them.
+ * Auto-creates all categories and links products to multiple categories.
  */
 class WPI_Import {
 
 	/**
 	 * Import a single product.
 	 *
+	 * If the product already exists (by source URL, source handle, SKU, or Title),
+	 * it is NOT duplicated — instead, any new categories are automatically attached
+	 * to the existing product.
+	 *
 	 * @param array $product Normalized product data.
-	 * @param array $options 'status' => 'publish'|'draft', 'skip_dup' => bool, 'categories' => array of term ids.
+	 * @param array $options 'status' => 'publish'|'draft', 'skip_dup' => bool, 'categories' => array of term ids, 'origin' => string.
 	 * @return array
 	 */
 	public static function import_product( $product, $options = array() ) {
@@ -24,37 +29,44 @@ class WPI_Import {
 			return array( 'ok' => false, 'message' => 'Product title is empty.' );
 		}
 
-		$status   = ! empty( $options['status'] ) ? 'publish' : 'draft';
-		$skip_dup = ! empty( $options['skip_dup'] );
-		$cats     = self::valid_categories( ! empty( $options['categories'] ) ? $options['categories'] : array() );
+		$status   = ! empty( $options['status'] ) && 'publish' === $options['status'] ? 'publish' : 'draft';
+		$origin   = ! empty( $options['origin'] ) ? $options['origin'] : '';
+		$title    = sanitize_text_field( wp_strip_all_tags( $product['title'] ) );
+		$sku      = isset( $product['sku'] ) ? sanitize_text_field( trim( (string) $product['sku'] ) ) : '';
+		$handle   = ! empty( $product['handle'] )
+			? sanitize_title( $product['handle'] )
+			: md5( ( isset( $product['source_url'] ) ? $product['source_url'] : '' ) . $title );
 
-		$title = sanitize_text_field( wp_strip_all_tags( $product['title'] ) );
-		$sku   = isset( $product['sku'] ) ? sanitize_text_field( trim( (string) $product['sku'] ) ) : '';
+		// 1. Resolve all categories (from options + scraped product data).
+		$cats = self::resolve_product_categories( $product, $options );
 
-		// ---- Duplicate checks -----------------------------------------
-		if ( $skip_dup ) {
-			if ( '' !== $sku ) {
-				$existing = wc_get_product_id_by_sku( $sku );
-				if ( $existing ) {
-					return array( 'ok' => false, 'skipped' => true, 'message' => 'Duplicate SKU: ' . $sku );
-				}
+		// 2. Check if this product already exists in WooCommerce.
+		$existing_id = self::find_existing_product( $product, $handle, $origin );
+
+		if ( $existing_id ) {
+			// Product already exists: DO NOT duplicate! Attach all categories to existing product.
+			if ( ! empty( $cats ) ) {
+				self::attach_categories_to_product( $existing_id, $cats );
 			}
 
-			$q = new WP_Query(
-				array(
-					'post_type'      => 'product',
-					'post_status'    => 'any',
-					'title'          => $title,
-					'posts_per_page' => 1,
-					'fields'         => 'ids',
-					'no_found_rows'  => true,
-				)
+			// Update transient map if origin is provided.
+			if ( '' !== $origin && '' !== $handle ) {
+				self::update_map_product( $origin, $handle, $existing_id );
+			}
+
+			$edit_url = function_exists( 'get_edit_post_link' ) ? (string) get_edit_post_link( $existing_id, 'raw' ) : '';
+
+			return array(
+				'ok'         => true,
+				'linked'     => true,
+				'product_id' => $existing_id,
+				'edit_url'   => $edit_url,
+				'title'      => $title,
+				'message'    => 'Linked to category',
 			);
-			if ( $q->have_posts() ) {
-				return array( 'ok' => false, 'skipped' => true, 'message' => 'Duplicate title: ' . $title );
-			}
 		}
 
+		// 3. Create a new product.
 		if ( ! function_exists( 'media_sideload_image' ) ) {
 			require_once ABSPATH . 'wp-admin/includes/media.php';
 			require_once ABSPATH . 'wp-admin/includes/file.php';
@@ -97,6 +109,17 @@ class WPI_Import {
 			return array( 'ok' => false, 'message' => 'Could not create the product.' );
 		}
 
+		// Save tracking post meta for multi-category linking & deduplication.
+		if ( '' !== $handle ) {
+			update_post_meta( $product_id, '_wpi_source_handle', $handle );
+		}
+		if ( ! empty( $product['source_url'] ) ) {
+			update_post_meta( $product_id, '_wpi_source_url', esc_url_raw( $product['source_url'] ) );
+		}
+		if ( '' !== $origin ) {
+			update_post_meta( $product_id, '_wpi_origin', esc_url_raw( $origin ) );
+		}
+
 		// Tags (Shopify tags / product types can map here).
 		if ( ! empty( $product['tags'] ) ) {
 			$raw_tags = is_array( $product['tags'] ) ? $product['tags'] : explode( ',', (string) $product['tags'] );
@@ -110,6 +133,11 @@ class WPI_Import {
 			if ( ! empty( $tags ) ) {
 				wp_set_object_terms( $product_id, $tags, 'product_tag' );
 			}
+		}
+
+		// Ensure categories are attached in taxonomy table.
+		if ( ! empty( $cats ) ) {
+			self::attach_categories_to_product( $product_id, $cats );
 		}
 
 		// ---- Images ----------------------------------------------------
@@ -143,6 +171,11 @@ class WPI_Import {
 			}
 		}
 
+		// Update transient map if origin is provided.
+		if ( '' !== $origin && '' !== $handle ) {
+			self::update_map_product( $origin, $handle, $product_id );
+		}
+
 		$edit_url = '';
 		if ( function_exists( 'get_edit_post_link' ) ) {
 			$edit_url = (string) get_edit_post_link( $product_id, 'raw' );
@@ -150,11 +183,191 @@ class WPI_Import {
 
 		return array(
 			'ok'         => true,
+			'linked'     => false,
 			'product_id' => $product_id,
 			'edit_url'   => $edit_url,
 			'title'      => $title,
 			'message'    => 'Imported',
 		);
+	}
+
+	/**
+	 * Find if a product already exists in WooCommerce.
+	 *
+	 * Checks transient map, source handle meta, source URL meta, SKU, and exact Title.
+	 *
+	 * @param array  $product
+	 * @param string $handle
+	 * @param string $origin
+	 * @return int Product ID or 0.
+	 */
+	public static function find_existing_product( $product, $handle = '', $origin = '' ) {
+		// 1. Transient map lookup.
+		if ( '' !== $origin && '' !== $handle ) {
+			$key = 'wpi_catmap_' . md5( $origin );
+			$map = get_transient( $key );
+			if ( is_array( $map ) && ! empty( $map['products'][ $handle ] ) ) {
+				$pid = (int) $map['products'][ $handle ];
+				if ( $pid > 0 && 'product' === get_post_type( $pid ) && 'trash' !== get_post_status( $pid ) ) {
+					return $pid;
+				}
+			}
+		}
+
+		// 2. Post meta _wpi_source_handle.
+		if ( '' !== $handle ) {
+			$q = new WP_Query(
+				array(
+					'post_type'      => 'product',
+					'post_status'    => array( 'publish', 'draft', 'pending', 'private' ),
+					'meta_key'       => '_wpi_source_handle',
+					'meta_value'     => $handle,
+					'posts_per_page' => 1,
+					'fields'         => 'ids',
+					'no_found_rows'  => true,
+				)
+			);
+			if ( ! empty( $q->posts[0] ) ) {
+				return (int) $q->posts[0];
+			}
+		}
+
+		// 3. Post meta _wpi_source_url.
+		if ( ! empty( $product['source_url'] ) ) {
+			$q = new WP_Query(
+				array(
+					'post_type'      => 'product',
+					'post_status'    => array( 'publish', 'draft', 'pending', 'private' ),
+					'meta_key'       => '_wpi_source_url',
+					'meta_value'     => esc_url_raw( $product['source_url'] ),
+					'posts_per_page' => 1,
+					'fields'         => 'ids',
+					'no_found_rows'  => true,
+				)
+			);
+			if ( ! empty( $q->posts[0] ) ) {
+				return (int) $q->posts[0];
+			}
+		}
+
+		// 4. SKU match.
+		if ( ! empty( $product['sku'] ) ) {
+			$sku = sanitize_text_field( trim( (string) $product['sku'] ) );
+			if ( '' !== $sku && function_exists( 'wc_get_product_id_by_sku' ) ) {
+				$sku_pid = wc_get_product_id_by_sku( $sku );
+				if ( $sku_pid && 'trash' !== get_post_status( $sku_pid ) ) {
+					return (int) $sku_pid;
+				}
+			}
+		}
+
+		// 5. Exact title match.
+		if ( ! empty( $product['title'] ) ) {
+			$title = sanitize_text_field( wp_strip_all_tags( $product['title'] ) );
+			if ( '' !== $title ) {
+				$q = new WP_Query(
+					array(
+						'post_type'      => 'product',
+						'post_status'    => array( 'publish', 'draft', 'pending', 'private' ),
+						'title'          => $title,
+						'posts_per_page' => 1,
+						'fields'         => 'ids',
+						'no_found_rows'  => true,
+					)
+				);
+				if ( ! empty( $q->posts[0] ) ) {
+					return (int) $q->posts[0];
+				}
+			}
+		}
+
+		return 0;
+	}
+
+	/**
+	 * Resolve and ensure all categories for a product.
+	 *
+	 * Gathers destination categories from $options['categories'] plus all categories
+	 * discovered on the remote product ($product['categories']), auto-creating any missing
+	 * terms in WooCommerce.
+	 *
+	 * @param array $product
+	 * @param array $options
+	 * @return array Array of term IDs.
+	 */
+	public static function resolve_product_categories( $product, $options = array() ) {
+		$cats = self::valid_categories( ! empty( $options['categories'] ) ? $options['categories'] : array() );
+
+		if ( ! empty( $product['categories'] ) && is_array( $product['categories'] ) ) {
+			foreach ( $product['categories'] as $cat_item ) {
+				$cat_name = '';
+				$cat_slug = '';
+				$cat_img  = '';
+
+				if ( is_array( $cat_item ) ) {
+					$cat_name = isset( $cat_item['name'] ) ? (string) $cat_item['name'] : ( isset( $cat_item['title'] ) ? (string) $cat_item['title'] : '' );
+					$cat_slug = isset( $cat_item['slug'] ) ? (string) $cat_item['slug'] : ( isset( $cat_item['handle'] ) ? (string) $cat_item['handle'] : '' );
+					$cat_img  = isset( $cat_item['image'] ) ? (string) $cat_item['image'] : '';
+				} elseif ( is_string( $cat_item ) ) {
+					$cat_name = $cat_item;
+					$cat_slug = sanitize_title( $cat_item );
+				}
+
+				$cat_name = trim( $cat_name );
+				if ( '' === $cat_name ) {
+					continue;
+				}
+
+				$cid = self::ensure_category( $cat_name, $cat_slug, $cat_img );
+				if ( $cid > 0 && ! in_array( $cid, $cats, true ) ) {
+					$cats[] = (int) $cid;
+				}
+			}
+		}
+
+		return $cats;
+	}
+
+	/**
+	 * Append category terms to a WooCommerce product and clear product transients.
+	 *
+	 * @param int   $product_id
+	 * @param array $cat_ids
+	 */
+	public static function attach_categories_to_product( $product_id, $cat_ids ) {
+		$valid = self::valid_categories( $cat_ids );
+		if ( empty( $valid ) || ! $product_id ) {
+			return;
+		}
+
+		wp_set_object_terms( (int) $product_id, $valid, 'product_cat', true );
+
+		if ( function_exists( 'wc_delete_product_transients' ) ) {
+			wc_delete_product_transients( (int) $product_id );
+		}
+		if ( function_exists( 'clean_post_cache' ) ) {
+			clean_post_cache( (int) $product_id );
+		}
+	}
+
+	/**
+	 * Helper to update transient product mapping.
+	 *
+	 * @param string $origin
+	 * @param string $handle
+	 * @param int    $product_id
+	 */
+	private static function update_map_product( $origin, $handle, $product_id ) {
+		if ( '' === $origin || '' === $handle || ! $product_id ) {
+			return;
+		}
+		$key = 'wpi_catmap_' . md5( $origin );
+		$map = get_transient( $key );
+		if ( ! is_array( $map ) ) {
+			$map = array( 'terms' => array(), 'products' => array() );
+		}
+		$map['products'][ $handle ] = (int) $product_id;
+		set_transient( $key, $map, DAY_IN_SECONDS );
 	}
 
 	/**
@@ -196,7 +409,7 @@ class WPI_Import {
 				$out[] = $c;
 			}
 		}
-		return $out;
+		return array_values( array_unique( $out ) );
 	}
 
 	/**
@@ -207,15 +420,17 @@ class WPI_Import {
 	 * @param string $image_url
 	 * @return int Term id or 0.
 	 */
-	public static function ensure_category( $name, $slug, $image_url = '' ) {
+	public static function ensure_category( $name, $slug = '', $image_url = '' ) {
 		if ( ! taxonomy_exists( 'product_cat' ) ) {
 			return 0;
 		}
 
-		$name = sanitize_text_field( trim( (string) $name ) );
+		$name = html_entity_decode( (string) $name, ENT_QUOTES, 'UTF-8' );
+		$name = sanitize_text_field( trim( wp_strip_all_tags( $name ) ) );
 		if ( '' === $name ) {
 			$name = 'Imported';
 		}
+
 		$slug = sanitize_title( (string) $slug );
 		if ( '' === $slug ) {
 			$slug = sanitize_title( $name );
@@ -226,22 +441,37 @@ class WPI_Import {
 		if ( $term && ! is_wp_error( $term ) ) {
 			$term_id = (int) $term->term_id;
 		} else {
-			$res = wp_insert_term( $name, 'product_cat', array( 'slug' => $slug ) );
-			if ( is_wp_error( $res ) ) {
-				$by_name = get_term_by( 'name', $name, 'product_cat' );
-				if ( $by_name && ! is_wp_error( $by_name ) ) {
-					$term_id = (int) $by_name->term_id;
-				} else {
-					return 0;
-				}
+			$by_name = get_term_by( 'name', $name, 'product_cat' );
+			if ( $by_name && ! is_wp_error( $by_name ) ) {
+				$term_id = (int) $by_name->term_id;
 			} else {
-				$term_id = (int) $res['term_id'];
+				$res = wp_insert_term( $name, 'product_cat', array( 'slug' => $slug ) );
+				if ( is_wp_error( $res ) ) {
+					$existing_term = get_term_by( 'slug', $slug, 'product_cat' );
+					if ( $existing_term && ! is_wp_error( $existing_term ) ) {
+						$term_id = (int) $existing_term->term_id;
+					} else {
+						$by_name2 = get_term_by( 'name', $name, 'product_cat' );
+						if ( $by_name2 && ! is_wp_error( $by_name2 ) ) {
+							$term_id = (int) $by_name2->term_id;
+						} else {
+							$term_exists_id = $res->get_error_data( 'term_exists' );
+							if ( $term_exists_id ) {
+								$term_id = (int) $term_exists_id;
+							} else {
+								return 0;
+							}
+						}
+					}
+				} else {
+					$term_id = (int) $res['term_id'];
+				}
 			}
 		}
 
 		// Category image: upload once, store as WooCommerce thumbnail_id.
 		$image_url = trim( (string) $image_url );
-		if ( '' !== $image_url && preg_match( '#^https?://#i', $image_url ) && ! get_term_meta( $term_id, 'thumbnail_id', true ) ) {
+		if ( $term_id && '' !== $image_url && preg_match( '#^https?://#i', $image_url ) && ! get_term_meta( $term_id, 'thumbnail_id', true ) ) {
 			if ( ! function_exists( 'media_sideload_image' ) ) {
 				require_once ABSPATH . 'wp-admin/includes/media.php';
 				require_once ABSPATH . 'wp-admin/includes/file.php';
@@ -277,15 +507,13 @@ class WPI_Import {
 		}
 
 		$status   = ! empty( $options['status'] ) ? 'publish' : 'draft';
-		$skip_dup = ! empty( $options['skip_dup'] );
-
-		$term_id = self::ensure_category(
+		$term_id  = self::ensure_category(
 			isset( $category['title'] ) ? $category['title'] : '',
 			isset( $category['handle'] ) ? $category['handle'] : '',
 			isset( $category['image'] ) ? $category['image'] : ''
 		);
 
-		$products = WPI_Scraper::fetch_category_products_all( $origin, $category );
+		$products = WPI_Scraper::fetch_category_products_all( $origin, $category, true );
 
 		$key = 'wpi_catmap_' . md5( $origin );
 		$map = get_transient( $key );
@@ -305,34 +533,18 @@ class WPI_Import {
 		);
 
 		foreach ( $products as $product ) {
-			$handle = ! empty( $product['handle'] )
-				? $product['handle']
-				: md5( ( isset( $product['source_url'] ) ? $product['source_url'] : '' ) . $product['title'] );
-
-			// Already imported from a previous category in this store.
-			if ( '' !== $handle && isset( $map['products'][ $handle ] ) ) {
-				if ( $skip_dup ) {
-					$stats['skipped']++;
-					continue;
-				}
-				if ( $term_id ) {
-					wp_set_object_terms( (int) $map['products'][ $handle ], array( $term_id ), 'product_cat', true );
-				}
-				$stats['linked']++;
-				continue;
-			}
-
 			$opts = array(
 				'status'     => $status,
-				'skip_dup'   => false,
 				'categories' => $term_id ? array( $term_id ) : array(),
+				'origin'     => $origin,
 			);
 			$res  = self::import_product( $product, $opts );
 
 			if ( ! empty( $res['ok'] ) ) {
-				$stats['imported']++;
-				if ( '' !== $handle ) {
-					$map['products'][ $handle ] = (int) $res['product_id'];
+				if ( ! empty( $res['linked'] ) ) {
+					$stats['linked']++;
+				} else {
+					$stats['imported']++;
 				}
 			} elseif ( ! empty( $res['skipped'] ) ) {
 				$stats['skipped']++;
@@ -340,8 +552,6 @@ class WPI_Import {
 				$stats['failed']++;
 			}
 		}
-
-		set_transient( $key, $map, DAY_IN_SECONDS );
 
 		return array(
 			'ok'       => true,
@@ -370,7 +580,7 @@ class WPI_Import {
 			isset( $category['image'] ) ? $category['image'] : ''
 		);
 
-		$products = WPI_Scraper::fetch_category_products_all( $origin, $category );
+		$products = WPI_Scraper::fetch_category_products_all( $origin, $category, true );
 
 		$key = 'wpi_catmap_' . md5( $origin );
 		$map = get_transient( $key );
@@ -391,7 +601,7 @@ class WPI_Import {
 	}
 
 	/**
-	 * Import a batch of products (3-4 items).
+	 * Import a batch of products.
 	 *
 	 * @param array $products List of products to import.
 	 * @param array $options 'status', 'skip_dup', 'categories', 'origin'.
@@ -410,74 +620,20 @@ class WPI_Import {
 			wp_raise_memory_limit( 'admin' );
 		}
 
-		$origin   = ! empty( $options['origin'] ) ? $options['origin'] : '';
-		$skip_dup = ! empty( $options['skip_dup'] );
-
-		$map = array( 'terms' => array(), 'products' => array() );
-		$key = '';
-		if ( '' !== $origin ) {
-			$key        = 'wpi_catmap_' . md5( $origin );
-			$stored_map = get_transient( $key );
-			if ( is_array( $stored_map ) ) {
-				$map = $stored_map;
-			}
-		}
-
 		$results = array();
 
 		foreach ( $products as $product ) {
 			if ( ! is_array( $product ) ) {
 				continue;
 			}
-			$client_id = isset( $product['_id'] ) ? $product['_id'] : '';
-			$handle    = ! empty( $product['handle'] )
-				? $product['handle']
-				: md5( ( isset( $product['source_url'] ) ? $product['source_url'] : '' ) . ( isset( $product['title'] ) ? $product['title'] : '' ) );
-
-			// Check multi-category mapping transient if origin is supplied
-			if ( '' !== $key && '' !== $handle && isset( $map['products'][ $handle ] ) ) {
-				$existing_id = (int) $map['products'][ $handle ];
-				if ( $skip_dup ) {
-					$results[] = array(
-						'_id'     => $client_id,
-						'ok'      => false,
-						'skipped' => true,
-						'linked'  => false,
-						'message' => 'Duplicate product (already imported)',
-					);
-					continue;
-				}
-				$cats = self::valid_categories( ! empty( $options['categories'] ) ? $options['categories'] : array() );
-				if ( ! empty( $cats ) ) {
-					wp_set_object_terms( $existing_id, $cats, 'product_cat', true );
-				}
-				$edit_url = function_exists( 'get_edit_post_link' ) ? (string) get_edit_post_link( $existing_id, 'raw' ) : '';
-				$results[] = array(
-					'_id'        => $client_id,
-					'ok'         => true,
-					'linked'     => true,
-					'product_id' => $existing_id,
-					'edit_url'   => $edit_url,
-					'title'      => isset( $product['title'] ) ? wp_strip_all_tags( $product['title'] ) : '',
-					'message'    => 'Linked to category',
-				);
-				continue;
-			}
-
-			// Single product import
+			$client_id     = isset( $product['_id'] ) ? $product['_id'] : '';
 			$res           = self::import_product( $product, $options );
 			$res['_id']    = $client_id;
-			$res['linked'] = false;
-
-			if ( ! empty( $res['ok'] ) && '' !== $key && '' !== $handle && ! empty( $res['product_id'] ) ) {
-				$map['products'][ $handle ] = (int) $res['product_id'];
+			if ( ! isset( $res['linked'] ) ) {
+				$res['linked'] = false;
 			}
 
 			$results[] = $res;
-		}
-
-		if ( '' !== $key ) {
-			set_transient( $key, $map, DAY_IN_SECONDS );
 		}
 
 		return array(

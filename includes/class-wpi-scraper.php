@@ -302,6 +302,15 @@ class WPI_Scraper {
 		$products = array();
 		$platform = isset( $category['platform'] ) ? $category['platform'] : '';
 
+		$current_cat = array();
+		if ( ! empty( $category['title'] ) || ! empty( $category['handle'] ) ) {
+			$current_cat = array(
+				'name'  => ! empty( $category['title'] ) ? $category['title'] : $category['handle'],
+				'slug'  => ! empty( $category['handle'] ) ? $category['handle'] : sanitize_title( $category['title'] ),
+				'image' => ! empty( $category['image'] ) ? $category['image'] : '',
+			);
+		}
+
 		if ( 'shopify' === $platform ) {
 			for ( $page = 1; $page <= self::MAX_PAGES; $page++ ) {
 				$api  = add_query_arg( array( 'limit' => 250, 'page' => $page ), $origin . '/collections/' . $category['handle'] . '/products.json' );
@@ -312,7 +321,20 @@ class WPI_Scraper {
 				}
 				foreach ( $data['products'] as $p ) {
 					if ( is_array( $p ) ) {
-						$products[] = self::normalize_shopify_product( $p, $origin );
+						$prod = self::normalize_shopify_product( $p, $origin );
+						if ( ! empty( $current_cat ) ) {
+							$has_cat = false;
+							foreach ( $prod['categories'] as $c ) {
+								if ( $c['slug'] === $current_cat['slug'] ) {
+									$has_cat = true;
+									break;
+								}
+							}
+							if ( ! $has_cat ) {
+								$prod['categories'][] = $current_cat;
+							}
+						}
+						$products[] = $prod;
 					}
 				}
 				if ( count( $data['products'] ) < 250 ) {
@@ -331,6 +353,18 @@ class WPI_Scraper {
 				foreach ( $data as $p ) {
 					$n = self::normalize_storeapi_product( $p );
 					if ( $n ) {
+						if ( ! empty( $current_cat ) ) {
+							$has_cat = false;
+							foreach ( $n['categories'] as $c ) {
+								if ( $c['slug'] === $current_cat['slug'] ) {
+									$has_cat = true;
+									break;
+								}
+							}
+							if ( ! $has_cat ) {
+								$n['categories'][] = $current_cat;
+							}
+						}
 						$products[] = $n;
 					}
 				}
@@ -346,6 +380,21 @@ class WPI_Scraper {
 					break;
 				}
 				foreach ( $r['products'] as $p ) {
+					if ( ! empty( $current_cat ) ) {
+						if ( empty( $p['categories'] ) ) {
+							$p['categories'] = array();
+						}
+						$has_cat = false;
+						foreach ( $p['categories'] as $c ) {
+							if ( isset( $c['slug'] ) && $c['slug'] === $current_cat['slug'] ) {
+								$has_cat = true;
+								break;
+							}
+						}
+						if ( ! $has_cat ) {
+							$p['categories'][] = $current_cat;
+						}
+					}
 					$products[] = $p;
 				}
 				if ( empty( $r['has_more'] ) ) {
@@ -381,6 +430,29 @@ class WPI_Scraper {
 			}
 		}
 
+		$categories = array();
+		if ( ! empty( $p['categories'] ) && is_array( $p['categories'] ) ) {
+			foreach ( $p['categories'] as $cat ) {
+				if ( is_array( $cat ) && ! empty( $cat['name'] ) ) {
+					$cat_img = '';
+					if ( ! empty( $cat['image']['src'] ) ) {
+						$cat_img = $cat['image']['src'];
+					}
+					$categories[] = array(
+						'name'  => sanitize_text_field( $cat['name'] ),
+						'slug'  => ! empty( $cat['slug'] ) ? sanitize_title( $cat['slug'] ) : sanitize_title( $cat['name'] ),
+						'image' => $cat_img,
+					);
+				} elseif ( is_string( $cat ) && '' !== trim( $cat ) ) {
+					$categories[] = array(
+						'name'  => sanitize_text_field( $cat ),
+						'slug'  => sanitize_title( $cat ),
+						'image' => '',
+					);
+				}
+			}
+		}
+
 		return array(
 			'source_url'        => isset( $p['permalink'] ) ? $p['permalink'] : '',
 			'title'             => $p['name'],
@@ -392,6 +464,7 @@ class WPI_Scraper {
 			'sku'               => isset( $p['sku'] ) ? $p['sku'] : '',
 			'image'             => ! empty( $images ) ? $images[0] : '',
 			'images'            => $images,
+			'categories'        => $categories,
 			'vendor'            => '',
 			'product_type'      => '',
 			'tags'              => '',
@@ -416,12 +489,14 @@ class WPI_Scraper {
 
 		$origin = $parts['scheme'] . '://' . $parts['host'];
 		$path   = isset( $parts['path'] ) ? $parts['path'] : '';
+		$collection_handle = '';
 
 		if ( preg_match( '#/products/([^/]+)/?#i', $path, $m ) ) {
 			// Single product page.
 			$api = $origin . '/products/' . $m[1] . '.json';
 		} elseif ( preg_match( '#/collections/([^/]+)#i', $path, $m ) ) {
 			// Category-scoped: only products of THIS collection.
+			$collection_handle = $m[1];
 			$api = $origin . '/collections/' . $m[1] . '/products.json';
 		} else {
 			// Not a product/collection URL. Never silently import the whole
@@ -433,6 +508,7 @@ class WPI_Scraper {
 					'error' => 'This does not look like a Shopify collection link. Please paste the full collection URL, e.g. https://store.com/collections/your-collection-name — only the products of that collection will be imported.',
 				);
 			}
+			$collection_handle = $handle;
 			$api = $origin . '/collections/' . $handle . '/products.json';
 		}
 
@@ -449,7 +525,25 @@ class WPI_Scraper {
 		$products = array();
 		foreach ( (array) $raw as $p ) {
 			if ( is_array( $p ) ) {
-				$products[] = self::normalize_shopify_product( $p, $origin );
+				$prod = self::normalize_shopify_product( $p, $origin );
+				if ( '' !== $collection_handle ) {
+					$coll_name = ucwords( str_replace( '-', ' ', $collection_handle ) );
+					$has_cat = false;
+					foreach ( $prod['categories'] as $c ) {
+						if ( $c['slug'] === $collection_handle ) {
+							$has_cat = true;
+							break;
+						}
+					}
+					if ( ! $has_cat ) {
+						$prod['categories'][] = array(
+							'name'  => $coll_name,
+							'slug'  => $collection_handle,
+							'image' => '',
+						);
+					}
+				}
+				$products[] = $prod;
 			}
 		}
 
@@ -488,6 +582,15 @@ class WPI_Scraper {
 		$body_html = isset( $p['body_html'] ) ? $p['body_html'] : '';
 		$plain     = wp_strip_all_tags( $body_html );
 
+		$categories = array();
+		if ( ! empty( $p['product_type'] ) && is_string( $p['product_type'] ) && '' !== trim( $p['product_type'] ) ) {
+			$categories[] = array(
+				'name'  => sanitize_text_field( trim( $p['product_type'] ) ),
+				'slug'  => sanitize_title( $p['product_type'] ),
+				'image' => '',
+			);
+		}
+
 		return array(
 			'source_url'        => $origin . '/products/' . ( isset( $p['handle'] ) ? $p['handle'] : '' ),
 			'title'             => isset( $p['title'] ) ? $p['title'] : '',
@@ -500,6 +603,7 @@ class WPI_Scraper {
 			'barcode'           => isset( $first['barcode'] ) ? $first['barcode'] : '',
 			'image'             => ! empty( $images ) ? $images[0] : '',
 			'images'            => $images,
+			'categories'        => $categories,
 			'vendor'            => isset( $p['vendor'] ) ? $p['vendor'] : '',
 			'product_type'      => isset( $p['product_type'] ) ? $p['product_type'] : '',
 			'tags'              => isset( $p['tags'] ) ? $p['tags'] : '',
@@ -580,6 +684,25 @@ class WPI_Scraper {
 		$items    = self::parse_product_list( $html, $target );
 		$max_page = self::detect_max_page( $html );
 
+		$cat_name = '';
+		$cat_slug = '';
+		if ( preg_match( '#/product-category/([^/?#]+)#i', $url, $m_cat ) ) {
+			$cat_slug = sanitize_title( $m_cat[1] );
+			$cat_name = ucwords( str_replace( '-', ' ', $cat_slug ) );
+		}
+		if ( preg_match( '#<h1[^>]*class="[^"]*woocommerce-products-header__title[^"]*"[^>]*>(.*?)</h1>#is', $html, $m_h1 ) ) {
+			$cat_name = trim( wp_strip_all_tags( $m_h1[1] ) );
+		}
+
+		$listing_cats = array();
+		if ( '' !== $cat_name ) {
+			$listing_cats[] = array(
+				'name'  => $cat_name,
+				'slug'  => $cat_slug ? $cat_slug : sanitize_title( $cat_name ),
+				'image' => '',
+			);
+		}
+
 		$products = array();
 		foreach ( $items as $item ) {
 			$product = array(
@@ -587,6 +710,7 @@ class WPI_Scraper {
 				'title'             => $item['title'],
 				'image'             => $item['image'],
 				'images'            => $item['image'] ? array( $item['image'] ) : array(),
+				'categories'        => $listing_cats,
 				'price'             => $item['price'],
 				'compare_at_price'  => $item['compare_at_price'],
 				'description'       => '',
@@ -604,6 +728,21 @@ class WPI_Scraper {
 					if ( 'images' === $k ) {
 						if ( ! empty( $v ) ) {
 							$product[ $k ] = $v;
+						}
+					} elseif ( 'categories' === $k ) {
+						if ( ! empty( $v ) && is_array( $v ) ) {
+							foreach ( $v as $new_cat ) {
+								$has_it = false;
+								foreach ( $product['categories'] as $existing_c ) {
+									if ( isset( $existing_c['slug'], $new_cat['slug'] ) && $existing_c['slug'] === $new_cat['slug'] ) {
+										$has_it = true;
+										break;
+									}
+								}
+								if ( ! $has_it ) {
+									$product['categories'][] = $new_cat;
+								}
+							}
 						}
 					} elseif ( '' !== $v && null !== $v ) {
 						$product[ $k ] = $v;
@@ -1015,7 +1154,7 @@ class WPI_Scraper {
 	}
 
 	/**
-	 * Fetch one WooCommerce product page for description, gallery, SKU and price.
+	 * Fetch one WooCommerce product page for description, gallery, SKU, price and categories.
 	 *
 	 * @param string $url
 	 * @return array
@@ -1031,6 +1170,29 @@ class WPI_Scraper {
 		// Match the innermost <span class="sku"> (not sku_wrapper etc.).
 		if ( preg_match( '#<span[^>]*class="[^"]*\bsku\b[^"]*"[^>]*>(.*?)</span>#is', $html, $m ) ) {
 			$out['sku'] = trim( wp_strip_all_tags( $m[1] ) );
+		}
+
+		$categories = array();
+
+		// Strategy 1: posted_in (standard WooCommerce product meta)
+		if ( preg_match( '#<span[^>]*class="[^"]*\bposted_in\b[^"]*"[^>]*>(.*?)</span>#is', $html, $m_posted ) ) {
+			if ( preg_match_all( '#<a[^>]+href="([^"]*)"[^>]*>(.*?)</a>#is', $m_posted[1], $m_links, PREG_SET_ORDER ) ) {
+				foreach ( $m_links as $link ) {
+					$c_name = trim( wp_strip_all_tags( $link[2] ) );
+					$c_href = $link[1];
+					$c_slug = '';
+					if ( preg_match( '#/product-category/([^/?#]+)#i', $c_href, $sm ) ) {
+						$c_slug = sanitize_title( $sm[1] );
+					}
+					if ( '' !== $c_name ) {
+						$categories[] = array(
+							'name'  => $c_name,
+							'slug'  => $c_slug ? $c_slug : sanitize_title( $c_name ),
+							'image' => '',
+						);
+					}
+				}
+			}
 		}
 
 		$doc = self::load_dom( $html );
@@ -1091,6 +1253,28 @@ class WPI_Scraper {
 					$out['compare_at_price'] = $parsed['compare'];
 				}
 			}
+
+			// DOM category lookup fallback if regex didn't find any
+			if ( empty( $categories ) ) {
+				$xp_cats = $xp->query( '//span[contains(concat(" ", normalize-space(@class), " "), " posted_in ")]//a' );
+				if ( $xp_cats && $xp_cats->length ) {
+					foreach ( $xp_cats as $a_node ) {
+						$c_name = trim( $a_node->textContent );
+						$c_href = $a_node->getAttribute( 'href' );
+						$c_slug = '';
+						if ( preg_match( '#/product-category/([^/?#]+)#i', $c_href, $sm ) ) {
+							$c_slug = sanitize_title( $sm[1] );
+						}
+						if ( '' !== $c_name ) {
+							$categories[] = array(
+								'name'  => $c_name,
+								'slug'  => $c_slug ? $c_slug : sanitize_title( $c_name ),
+								'image' => '',
+							);
+						}
+					}
+				}
+			}
 		} else {
 			// Regex fallback.
 			if ( preg_match( '#<div[^>]*class="[^"]*woocommerce-Tabs-panel--description[^"]*"[^>]*>(.*?)</div>#is', $html, $m ) ) {
@@ -1111,6 +1295,39 @@ class WPI_Scraper {
 			}
 		}
 
+		// Strategy 3: JSON-LD BreadcrumbList / Category fallback
+		if ( empty( $categories ) && preg_match_all( '#<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>#is', $html, $json_matches ) ) {
+			foreach ( $json_matches[1] as $json_str ) {
+				$json_data = json_decode( trim( $json_str ), true );
+				if ( ! is_array( $json_data ) ) {
+					continue;
+				}
+				$graph = isset( $json_data['@graph'] ) ? $json_data['@graph'] : array( $json_data );
+				foreach ( $graph as $item ) {
+					if ( isset( $item['@type'] ) && ( 'BreadcrumbList' === $item['@type'] || ( is_array( $item['@type'] ) && in_array( 'BreadcrumbList', $item['@type'], true ) ) ) && ! empty( $item['itemListElement'] ) && is_array( $item['itemListElement'] ) ) {
+						$elements   = $item['itemListElement'];
+						$count_elem = count( $elements );
+						for ( $idx = 1; $idx < $count_elem - 1; $idx++ ) {
+							$elem     = $elements[ $idx ];
+							$name     = isset( $elem['name'] ) ? trim( (string) $elem['name'] ) : ( isset( $elem['item']['name'] ) ? trim( (string) $elem['item']['name'] ) : '' );
+							$elem_url = isset( $elem['item'] ) && is_string( $elem['item'] ) ? $elem['item'] : ( isset( $elem['item']['@id'] ) ? $elem['item']['@id'] : '' );
+							$slug     = '';
+							if ( preg_match( '#/product-category/([^/?#]+)#i', $elem_url, $sm ) ) {
+								$slug = sanitize_title( $sm[1] );
+							}
+							if ( '' !== $name && ! in_array( strtolower( $name ), array( 'home', 'shop', 'products' ), true ) ) {
+								$categories[] = array(
+									'name'  => $name,
+									'slug'  => $slug ? $slug : sanitize_title( $name ),
+									'image' => '',
+								);
+							}
+						}
+					}
+				}
+			}
+		}
+
 		if ( ! empty( $out['images'] ) ) {
 			$out['images'] = array_values( array_unique( array_filter( $out['images'], function ( $i ) {
 				return 0 === strpos( $i, 'http' );
@@ -1118,6 +1335,8 @@ class WPI_Scraper {
 		} else {
 			$out['images'] = array();
 		}
+
+		$out['categories'] = $categories;
 
 		return $out;
 	}

@@ -283,7 +283,7 @@
         if (!confirm('Import ' + list.length + ' product(s) into your WooCommerce store?')) { return; }
 
         state.stop = false;
-        state.stats = { imported: 0, skipped: 0, failed: 0 };
+        state.stats = { imported: 0, skipped: 0, linked: 0, failed: 0 };
         $('#wpi-summary').hide();
         setBusy(true);
         $('#wpi-stop').show().prop('disabled', false);

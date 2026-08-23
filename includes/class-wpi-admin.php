@@ -109,6 +109,7 @@ class WPI_Admin {
 			'status'     => ! empty( $_POST['status'] ) && 'publish' === sanitize_key( $_POST['status'] ),
 			'skip_dup'   => ! empty( $_POST['skip_dup'] ),
 			'categories' => $categories,
+			'origin'     => isset( $_POST['origin'] ) ? esc_url_raw( wp_unslash( $_POST['origin'] ) ) : '',
 		);
 
 		$result = WPI_Import::import_product( $product, $options );
