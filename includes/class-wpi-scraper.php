@@ -2,14 +2,14 @@
 defined( 'ABSPATH' ) || exit;
 
 /**
- * WPI_Scraper
+ * ALAMIN_PI_Scraper
  *
  * Detects the e-commerce platform from a category / collection URL and
  * pulls product data from it:
  *   - Shopify        -> uses the public /collections/{handle}/products.json feed
  *   - WooCommerce    -> parses the category HTML (listing + optional product pages)
  */
-class WPI_Scraper {
+class ALAMIN_PI_Scraper {
 
 	/** Safety cap on how many pages we will walk through. */
 	const MAX_PAGES = 50;
@@ -49,8 +49,8 @@ class WPI_Scraper {
 	 * @return string 'shopify' | 'woocommerce' | 'unknown'
 	 */
 	public static function detect_platform( $url ) {
-		$path = (string) parse_url( $url, PHP_URL_PATH );
-		$host = strtolower( (string) parse_url( $url, PHP_URL_HOST ) );
+		$path = (string) wp_parse_url( $url, PHP_URL_PATH );
+		$host = strtolower( (string) wp_parse_url( $url, PHP_URL_HOST ) );
 
 		if ( preg_match( '#/(?:collections|products)/#i', $path ) || false !== strpos( $host, 'shopify' ) ) {
 			return 'shopify';
@@ -68,7 +68,7 @@ class WPI_Scraper {
 	 * @return bool
 	 */
 	public static function looks_like_shopify( $url ) {
-		$parts = parse_url( $url );
+		$parts = wp_parse_url( $url );
 		if ( empty( $parts['scheme'] ) || empty( $parts['host'] ) ) {
 			return false;
 		}
@@ -85,7 +85,7 @@ class WPI_Scraper {
 	 * @return string
 	 */
 	private static function origin_of( $url ) {
-		$parts = parse_url( $url );
+		$parts = wp_parse_url( $url );
 		if ( empty( $parts['scheme'] ) || empty( $parts['host'] ) ) {
 			return '';
 		}
@@ -420,6 +420,14 @@ class WPI_Scraper {
 		$price   = isset( $prices['price'] ) ? $prices['price'] : '';
 		$regular = isset( $prices['regular_price'] ) ? $prices['regular_price'] : $price;
 		$sale    = isset( $prices['sale_price'] ) ? $prices['sale_price'] : '';
+        // Store API amounts use the currency's smallest unit, not major units.
+        $minor = isset( $prices['currency_minor_unit'] ) ? min( 8, absint( $prices['currency_minor_unit'] ) ) : 2;
+        $to_major = static function ( $amount ) use ( $minor ) {
+            return '' !== $amount && is_numeric( $amount ) ? number_format( (float) $amount / pow( 10, $minor ), $minor, '.', '' ) : '';
+        };
+        $price = $to_major( $price );
+        $regular = $to_major( $regular );
+        $sale = $to_major( $sale );
 
 		$images = array();
 		if ( ! empty( $p['images'] ) && is_array( $p['images'] ) ) {
@@ -482,7 +490,7 @@ class WPI_Scraper {
 	 * @return array
 	 */
 	public static function fetch_shopify( $url, $page = 1 ) {
-		$parts = parse_url( $url );
+		$parts = wp_parse_url( $url );
 		if ( empty( $parts['scheme'] ) || empty( $parts['host'] ) ) {
 			return array( 'error' => 'Invalid URL.' );
 		}
@@ -686,7 +694,7 @@ class WPI_Scraper {
 
 		$cat_name = '';
 		$cat_slug = '';
-		if ( preg_match( '#/product-category/([^/?#]+)#i', $url, $m_cat ) ) {
+		if ( preg_match( '#/product-category/([^/?\#]+)#i', $url, $m_cat ) ) {
 			$cat_slug = sanitize_title( $m_cat[1] );
 			$cat_name = ucwords( str_replace( '-', ' ', $cat_slug ) );
 		}
@@ -1181,7 +1189,7 @@ class WPI_Scraper {
 					$c_name = trim( wp_strip_all_tags( $link[2] ) );
 					$c_href = $link[1];
 					$c_slug = '';
-					if ( preg_match( '#/product-category/([^/?#]+)#i', $c_href, $sm ) ) {
+					if ( preg_match( '#/product-category/([^/?\#]+)#i', $c_href, $sm ) ) {
 						$c_slug = sanitize_title( $sm[1] );
 					}
 					if ( '' !== $c_name ) {
@@ -1262,7 +1270,7 @@ class WPI_Scraper {
 						$c_name = trim( $a_node->textContent );
 						$c_href = $a_node->getAttribute( 'href' );
 						$c_slug = '';
-						if ( preg_match( '#/product-category/([^/?#]+)#i', $c_href, $sm ) ) {
+						if ( preg_match( '#/product-category/([^/?\#]+)#i', $c_href, $sm ) ) {
 							$c_slug = sanitize_title( $sm[1] );
 						}
 						if ( '' !== $c_name ) {
@@ -1312,7 +1320,7 @@ class WPI_Scraper {
 							$name     = isset( $elem['name'] ) ? trim( (string) $elem['name'] ) : ( isset( $elem['item']['name'] ) ? trim( (string) $elem['item']['name'] ) : '' );
 							$elem_url = isset( $elem['item'] ) && is_string( $elem['item'] ) ? $elem['item'] : ( isset( $elem['item']['@id'] ) ? $elem['item']['@id'] : '' );
 							$slug     = '';
-							if ( preg_match( '#/product-category/([^/?#]+)#i', $elem_url, $sm ) ) {
+							if ( preg_match( '#/product-category/([^/?\#]+)#i', $elem_url, $sm ) ) {
 								$slug = sanitize_title( $sm[1] );
 							}
 							if ( '' !== $name && ! in_array( strtolower( $name ), array( 'home', 'shop', 'products' ), true ) ) {
@@ -1358,13 +1366,13 @@ class WPI_Scraper {
 			return '';
 		}
 		if ( 0 === strpos( $url, '//' ) ) {
-			$scheme = parse_url( $base_url, PHP_URL_SCHEME );
+			$scheme = wp_parse_url( $base_url, PHP_URL_SCHEME );
 			return ( $scheme ? $scheme : 'https' ) . ':' . $url;
 		}
 		if ( preg_match( '#^https?://#i', $url ) ) {
 			return $url;
 		}
-		$base_parts = parse_url( $base_url );
+		$base_parts = wp_parse_url( $base_url );
 		if ( empty( $base_parts['host'] ) ) {
 			return $url;
 		}
@@ -1420,18 +1428,27 @@ class WPI_Scraper {
 	}
 
 	/**
-	 * Extract the first number from a price string like "৳1,500.00" or "$49".
+	 * Extract the first number from a price string like "1,500.00" or "$49".
 	 *
 	 * @param string $text
 	 * @return string
 	 */
 	public static function parse_price( $text ) {
-		$text = html_entity_decode( wp_strip_all_tags( (string) $text ) );
-		if ( preg_match( '/[-+]?[\d][\d,]*(?:\.\d+)?/', $text, $m ) ) {
-			return (string) (float) str_replace( ',', '', $m[0] );
-		}
-		return '';
-	}
+        $text = html_entity_decode( wp_strip_all_tags( (string) $text ), ENT_QUOTES, 'UTF-8' );
+        if ( ! preg_match( '/[-+]?(?:[0-9]{1,3}(?:[ \x{00A0}\x{202F}][0-9]{3})+(?:[.,][0-9]+)?|[0-9][0-9.,]*)/u', $text, $matches ) ) {
+            return '';
+        }
+        $number = preg_replace( '/[ \x{00A0}\x{202F}]/u', '', $matches[0] );
+        $comma = strrpos( $number, ',' );
+        $dot = strrpos( $number, '.' );
+        if ( false !== $comma && false !== $dot ) {
+            $number = $comma > $dot ? str_replace( ',', '.', str_replace( '.', '', $number ) ) : str_replace( ',', '', $number );
+        } elseif ( false !== $comma ) {
+            $fraction = strlen( $number ) - $comma - 1;
+            $number = $fraction > 0 && $fraction <= 2 ? str_replace( ',', '.', $number ) : str_replace( ',', '', $number );
+        }
+        return is_numeric( $number ) ? $number : '';
+    }
 
 	/**
 	 * GET a URL and return the response body ('' on failure).
@@ -1445,7 +1462,7 @@ class WPI_Scraper {
 			return '';
 		}
 
-		$parsed = parse_url( $url );
+		$parsed = wp_parse_url( $url );
 		if ( empty( $parsed['host'] ) || empty( $parsed['scheme'] ) ) {
 			return '';
 		}
@@ -1453,7 +1470,8 @@ class WPI_Scraper {
 		$args = array(
 			'timeout'     => 40,
 			'redirection' => 5,
-			'sslverify'   => false, // many stores have SSL quirks; relaxing here keeps the importer working
+			'sslverify'   => true,
+            'limit_response_size' => 5 * MB_IN_BYTES,
 			'user-agent'  => self::UA,
 			'headers'     => array(
 				'Accept' => 'text/html,application/xhtml+xml,application/json,*/*;q=0.8',
@@ -1461,12 +1479,8 @@ class WPI_Scraper {
 		);
 
 		$response = wp_safe_remote_get( $url, $args );
-		if ( is_wp_error( $response ) ) {
-			// Fallback to wp_remote_get for custom local dev hosts
-			$response = wp_remote_get( $url, $args );
-			if ( is_wp_error( $response ) ) {
-				return '';
-			}
+		if ( is_wp_error( $response ) || 200 !== wp_remote_retrieve_response_code( $response ) ) {
+			return '';
 		}
 		return (string) wp_remote_retrieve_body( $response );
 	}
@@ -1486,7 +1500,7 @@ class WPI_Scraper {
 		}
 		$prev = libxml_use_internal_errors( true );
 		$doc  = new DOMDocument();
-		$ok   = @$doc->loadHTML( '<?xml encoding="utf-8" ?>' . $html );
+		$ok   = @$doc->loadHTML( '<?xml encoding="utf-8" ?>' . $html, LIBXML_NONET );
 		libxml_clear_errors();
 		libxml_use_internal_errors( $prev );
 		if ( ! $ok ) {

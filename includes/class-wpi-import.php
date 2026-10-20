@@ -2,13 +2,13 @@
 defined( 'ABSPATH' ) || exit;
 
 /**
- * WPI_Import
+ * ALAMIN_PI_Import
  *
  * Creates WooCommerce products (WC_Product_Simple) from the scraped data,
  * downloads the images into the media library and attaches them.
  * Auto-creates all categories and links products to multiple categories.
  */
-class WPI_Import {
+class ALAMIN_PI_Import {
 
 	/**
 	 * Import a single product.
@@ -43,6 +43,9 @@ class WPI_Import {
 		// 2. Check if this product already exists in WooCommerce.
 		$existing_id = self::find_existing_product( $product, $handle, $origin );
 
+        if ( $existing_id && ! empty( $options['skip_dup'] ) && empty( $options['categories'] ) && empty( $product['categories'] ) ) {
+            return array( 'ok' => false, 'skipped' => true, 'message' => 'Product already exists.' );
+        }
 		if ( $existing_id ) {
 			// Product already exists: DO NOT duplicate! Attach all categories to existing product.
 			if ( ! empty( $cats ) ) {
@@ -215,13 +218,16 @@ class WPI_Import {
 		}
 
 		// 2. Post meta _wpi_source_handle.
-		if ( '' !== $handle ) {
+		if ( '' !== $handle && '' !== $origin ) {
 			$q = new WP_Query(
 				array(
 					'post_type'      => 'product',
 					'post_status'    => array( 'publish', 'draft', 'pending', 'private' ),
-					'meta_key'       => '_wpi_source_handle',
-					'meta_value'     => $handle,
+					// phpcs:ignore WordPress.DB.SlowDBQuery -- Bounded duplicate lookup for custom source identifiers; transient map is checked first.
+					'meta_query'     => array(
+                        array( 'key' => '_wpi_source_handle', 'value' => $handle ),
+                        array( 'key' => '_wpi_origin', 'value' => esc_url_raw( $origin ) ),
+                    ),
 					'posts_per_page' => 1,
 					'fields'         => 'ids',
 					'no_found_rows'  => true,
@@ -238,7 +244,9 @@ class WPI_Import {
 				array(
 					'post_type'      => 'product',
 					'post_status'    => array( 'publish', 'draft', 'pending', 'private' ),
+					// phpcs:ignore WordPress.DB.SlowDBQuery -- Bounded duplicate lookup for custom source identifiers; transient map is checked first.
 					'meta_key'       => '_wpi_source_url',
+					// phpcs:ignore WordPress.DB.SlowDBQuery -- Bounded duplicate lookup for custom source identifiers; transient map is checked first.
 					'meta_value'     => esc_url_raw( $product['source_url'] ),
 					'posts_per_page' => 1,
 					'fields'         => 'ids',
@@ -500,20 +508,18 @@ class WPI_Import {
 		if ( ! class_exists( 'WooCommerce' ) ) {
 			return array( 'ok' => false, 'message' => 'WooCommerce is not active.' );
 		}
-
-		@set_time_limit( 0 );
 		if ( function_exists( 'wp_raise_memory_limit' ) ) {
 			wp_raise_memory_limit( 'admin' );
 		}
 
-		$status   = ! empty( $options['status'] ) ? 'publish' : 'draft';
+		$status   = isset( $options['status'] ) && 'publish' === $options['status'] ? 'publish' : 'draft';
 		$term_id  = self::ensure_category(
 			isset( $category['title'] ) ? $category['title'] : '',
 			isset( $category['handle'] ) ? $category['handle'] : '',
 			isset( $category['image'] ) ? $category['image'] : ''
 		);
 
-		$products = WPI_Scraper::fetch_category_products_all( $origin, $category, true );
+		$products = ALAMIN_PI_Scraper::fetch_category_products_all( $origin, $category, true );
 
 		$key = 'wpi_catmap_' . md5( $origin );
 		$map = get_transient( $key );
@@ -580,7 +586,7 @@ class WPI_Import {
 			isset( $category['image'] ) ? $category['image'] : ''
 		);
 
-		$products = WPI_Scraper::fetch_category_products_all( $origin, $category, true );
+		$products = ALAMIN_PI_Scraper::fetch_category_products_all( $origin, $category, true );
 
 		$key = 'wpi_catmap_' . md5( $origin );
 		$map = get_transient( $key );
@@ -614,8 +620,9 @@ class WPI_Import {
 		if ( empty( $products ) || ! is_array( $products ) ) {
 			return array( 'ok' => false, 'message' => 'No products provided.' );
 		}
-
-		@set_time_limit( 300 );
+		if ( count( $products ) > 4 ) {
+            return array( 'ok' => false, 'message' => 'A batch may contain at most four products.' );
+        }
 		if ( function_exists( 'wp_raise_memory_limit' ) ) {
 			wp_raise_memory_limit( 'admin' );
 		}
@@ -627,7 +634,11 @@ class WPI_Import {
 				continue;
 			}
 			$client_id     = isset( $product['_id'] ) ? $product['_id'] : '';
-			$res           = self::import_product( $product, $options );
+			try {
+                $res = self::import_product( $product, $options );
+            } catch ( Exception $exception ) {
+                $res = array( 'ok' => false, 'message' => sanitize_text_field( $exception->getMessage() ) );
+            }
 			$res['_id']    = $client_id;
 			if ( ! isset( $res['linked'] ) ) {
 				$res['linked'] = false;
@@ -658,7 +669,7 @@ class WPI_Import {
 		if ( '' === $value || ! is_numeric( $value ) ) {
 			return '';
 		}
-		return number_format( (float) $value, 2, '.', '' );
+		return number_format( (float) $value, function_exists( 'wc_get_price_decimals' ) ? wc_get_price_decimals() : 2, '.', '' );
 	}
 }
 

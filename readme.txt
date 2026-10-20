@@ -1,59 +1,117 @@
-=== Product Importer — URL to WooCommerce ===
-Contributors: developeralaminvi, devalamin
-Author: Md Alamin
-Author URI: http://devalamin.me/
-Tags: woocommerce, importer, shopify, scraping, products
-Requires at least: 5.8
-Tested up to: 6.7
-Requires PHP: 7.2
-Stable tag: 1.2.0
+=== Alamin Product Importer – URL Import for WooCommerce ===
+Contributors: devalaminvi
+Tags: woocommerce, product importer, shopify, catalog, import
+Requires at least: 6.5
+Tested up to: 7.1
+Requires PHP: 7.4
+Requires Plugins: woocommerce
+Stable tag: 1.2.3
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
-Paste a Shopify collection or WooCommerce category link and import all its products (image, title, price, description, SKU, gallery) into your WooCommerce store in one click.
+Import products from Shopify and WooCommerce URLs, including images, prices, descriptions, SKUs, and categories.
 
 == Description ==
 
+Alamin Product Importer brings products into WooCommerce from a source URL. Preview a Shopify product or collection, a WooCommerce category, or discover categories from a store homepage. Choose the content you want to import and save products as drafts or publish them.
+
 = Features =
 
-* Paste a **Shopify collection** link (`https://store.com/collections/men`) — imports every product in that collection via the public `products.json` feed (title, description, price, compare-at price, SKU, barcode, vendor, tags, all gallery images).
-* Paste a **WooCommerce category** link (`https://store.com/product-category/men` or `…/shop/…`) — parses the category page, walks through every page, and (optionally) opens each product page for the full description, gallery and SKU.
-* Also handles a single **Shopify product page** URL.
-* One-click import into your own store as **WooCommerce products** — images are downloaded into the media library, sale prices are mapped correctly, SKU is set, tags/vendor kept, products can go to a chosen destination category.
-* Preview table with thumbnails, prices and SKUs; tick the products you want; import as **draft or published**.
-* Duplicate protection: skips products that already exist by SKU or title.
-* No API keys needed.
+* Import Shopify products and collections using public JSON endpoints.
+* Discover WooCommerce categories through the public Store API and supported HTML pages.
+* Preview products and select individual items before importing.
+* Import product titles, descriptions, prices, SKUs, tags, and available images.
+* Create source categories and download available category images.
+* Link existing products to additional categories instead of creating duplicates.
+* Process product imports in small batches with progress and a stop control.
+* English administration interface with responsive settings and draft defaults.
+* No account registration or API keys required.
 
-= Requirements =
+= Requirements and limitations =
 
-* WordPress 5.8+
-* WooCommerce 5.0+ (active)
+WordPress 6.5 or later, PHP 7.4 or later, and an active WooCommerce installation are required. PHP DOM is recommended for HTML parsing. Your server must be able to make outbound HTTP requests and download images.
 
-= Installation =
+Products are created as simple products. This is a product catalog importer, not a complete store migration or inventory synchronization service. Variations, orders, customers, shipping, tax settings, currency conversion, and scheduled synchronization are not imported. Review source and destination currencies and prices before publishing. Store restrictions, custom themes, missing public APIs, and request limits can prevent extraction. Large catalogs may require smaller imports.
 
-1. Upload the `woo-product-importer` folder to `/wp-content/plugins/` (or upload the zip under Plugins > Add New > Upload).
-2. Activate the plugin.
-3. Go to **Product Importer** in the admin menu.
-4. Paste a category / collection link, click **Load Products**, review, then **Import selected**.
+= External requests and privacy =
 
-= Important =
+When you click Preview source, the plugin requests the source URL you provide and related product, collection, category, and pagination endpoints. Shopify sources use public JSON feeds; WooCommerce sources may use the public Store API. Product previews may load images directly from the source store or its image CDN. Importing downloads available product and category images into your media library.
 
-Only import from stores you have permission to use. Respect the source site's Terms of Service and copyright (product images are usually copyrighted). Check your country's laws before re-selling content.
+The source store and its image providers receive ordinary HTTP request information, including your server IP address for server requests and your browser IP address for directly displayed preview images. The plugin does not send telemetry to its author and does not require a third-party account. Source URLs and product handles are stored with imported products for duplicate detection. Temporary source mappings expire after one day.
+
+Only import from stores you own or have permission to use. Obtain rights to descriptions and images and comply with each source provider's terms. Shopify terms: https://www.shopify.com/legal/terms . WooCommerce terms: https://woocommerce.com/terms-conditions/ . Individual stores and image providers have their own terms and privacy policies.
+
+= Source and support =
+
+Plugin website and documentation: https://devalamin.me/alamin-product-importer/
+
+Source code and issue tracker: https://github.com/developeralaminvi/woo-product-importer
+
+This independent plugin is developed by Md Alamin and is not affiliated with or endorsed by Shopify or WooCommerce.
+
+== Installation ==
+
+1. Install and activate WooCommerce.
+2. Upload the alamin-product-importer ZIP using Plugins > Add New > Upload Plugin.
+3. Activate Alamin Product Importer – URL Import for WooCommerce.
+4. Open Product Importer from the administration menu.
+5. Choose a source mode, enter a URL, and click Preview source.
+6. Select products or categories and review import preferences.
+7. Import as drafts, verify content and prices, then publish when ready.
+
+== Frequently Asked Questions ==
+
+= Does this import variable products? =
+
+No. Products are created as simple products. Review variant-specific details manually.
+
+= Does it convert currencies? =
+
+No. Prices are copied as numeric values. Ensure the source and destination currency match or adjust prices before publishing.
+
+= Can I import from any website? =
+
+No. Shopify public feeds and WooCommerce public APIs or supported HTML structures are supported. Private stores, blocked requests, and custom storefronts may not work.
+
+= What happens to existing products? =
+
+Matching source identifiers, SKUs, or exact titles prevent duplicate creation. New category assignments may be linked to existing products. Existing product content is not overwritten.
+
+= Will uninstalling remove imported products? =
+
+No. Imported products, categories, and images remain in your store. Delete unwanted imported content through WooCommerce and the media library.
 
 == Changelog ==
 
+= 1.2.3 =
+* Added the official plugin website URL and HTTPS developer links.
+* Corrected historical changelog version headings.
+
+= 1.2.2 =
+* Added a keyboard-accessible Developer tab with contact information and professional profiles.
+* Kept developer links separate from the product import workflow.
+
+= 1.2.1 =
+* Renamed the plugin to Alamin Product Importer – URL Import for WooCommerce.
+* Rebuilt the administration styling and switched all default interface text to English.
+* Enabled TLS certificate verification and removed unsafe request fallbacks.
+* Corrected draft and published status handling and source-scoped handle matching.
+* Added input sanitization, response limits, and clearer import and privacy documentation.
+* Fixed Store API currency minor units and added common international HTML price formats.
+
 = 1.2.0 =
-* NEW: Automatic Multi-Category Extraction & Assignment — products belonging to multiple categories on the source store (Store API / HTML / Shopify) automatically get all their categories created and attached.
-* IMPROVEMENT: Multi-category linking ensures existing products have new categories appended without duplicate products being created.
-* IMPROVEMENT: Persistent tracking with source handle & URL post meta for cross-session deduplication and category linking.
+* Added multi-category extraction, assignment, and source tracking.
 
 = 1.1.0 =
-* NEW: Full-site mode — paste the store homepage and import ALL categories + ALL products automatically.
-* NEW: Category images are downloaded and set as WooCommerce category images (thumbnail_id).
-* NEW: Categories are auto-created from the source site (Shopify collections / WooCommerce Store API / HTML scan).
-* NEW: Products found in several categories are linked instead of duplicated.
-* NEW: Categories sorted by product count; "only categories with products" filter in the UI.
-* NEW: WooCommerce public Store API integration for fast, accurate full-site import.
+* Added store category discovery and category image imports.
 
 = 1.0.0 =
 * Initial release.
+
+== Upgrade Notice ==
+
+= 1.2.3 =
+Added the official plugin website and refreshed submission metadata.
+
+= 1.2.2 =
+Security and reliability improvements, a refreshed English interface, and the new Alamin Product Importer name.

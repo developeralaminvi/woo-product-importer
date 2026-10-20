@@ -10,6 +10,28 @@
 (function ($) {
     'use strict';
 
+    function activateTab(button) {
+        var panelId = button.getAttribute('aria-controls');
+        $('.wpi-tab').each(function () {
+            var active = this === button;
+            $(this).toggleClass('is-active', active).attr('aria-selected', String(active)).attr('tabindex', active ? '0' : '-1');
+        });
+        $('#wpi-panel-import, #wpi-panel-developer').prop('hidden', true);
+        $('#' + panelId).prop('hidden', false);
+    }
+    $('.wpi-tab').on('click', function () { activateTab(this); }).on('keydown', function (event) {
+        var buttons = $('.wpi-tab').toArray();
+        var index = buttons.indexOf(this);
+        if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') {
+            index = (index + (event.key === 'ArrowRight' ? 1 : -1) + buttons.length) % buttons.length;
+        } else if (event.key === 'Home') { index = 0; }
+        else if (event.key === 'End') { index = buttons.length - 1; }
+        else { return; }
+        event.preventDefault();
+        activateTab(buttons[index]);
+        buttons[index].focus();
+    });
+
     var BATCH_SIZE = 4; // Import 3-4 products per AJAX batch to prevent server hangs
 
     var state = {
@@ -20,6 +42,7 @@
         products: [],
         categories: [],
         fetching: false,
+        fetchFailed: false,
         stop: false,
         stats: { imported: 0, skipped: 0, linked: 0, failed: 0 }
     };
@@ -65,7 +88,8 @@
         state.fetching = busy;
         $('#wpi-fetch, #wpi-import-selected, #wpi-import-all, #wpi-import-site, #wpi-cat-select-all, #wpi-cat-select-none')
             .prop('disabled', busy);
-        $('#wpi-stop').toggle(busy);
+        $('#wpi-stop').toggle(busy).prop('disabled', false);
+        $('input[name="wpi-mode"], #wpi-url, .wpi-options input, .wpi-options select').prop('disabled', busy);
     }
 
     function showProgress(percent, label) {
@@ -108,11 +132,11 @@
     $('input[name="wpi-mode"]').on('change', function () {
         state.mode = this.value;
         $('#wpi-url').attr('placeholder', state.mode === 'site'
-            ? 'https://store.com  — পুরো সাইট (সব ক্যাটাগরি + সব প্রোডাক্ট)'
+            ? 'https://store.com'
             : 'https://store.com/collections/men   or   https://store.com/product-category/men');
         $('#wpi-note').html(state.mode === 'site'
-            ? 'পুরো সাইট মোড: শুধু স্টোরের মূল লিংক দিন (যেমন <code>https://store.com</code>) — সব ক্যাটাগরি, ক্যাটাগরি ছবি আর সব প্রোডাক্ট অটো ইমপোর্ট হবে।'
-            : 'ক্যাটাগরি মোড: <code>…/collections/…</code> (Shopify) বা <code>…/product-category/…</code>, <code>…/shop/…</code> (WooCommerce)।');
+            ? 'Enter the store homepage, such as <code>https://store.com</code>. Preview categories before importing their products.'
+            : 'Use <code>/collections/</code> or <code>/products/</code> for Shopify, or <code>/product-category/</code> for WooCommerce.');
         $('#wpi-single-options').toggle(state.mode === 'category');
         $('#wpi-site-options').toggle(state.mode === 'site');
         $('#wpi-cat-preview, #wpi-results, #wpi-empty, #wpi-summary').hide();
@@ -122,9 +146,10 @@
 
     $('#wpi-fetch').on('click', function () {
         var url = $('#wpi-url').val().trim();
-        if (!url) { alert('লিংকটা পেস্ট করুন — e.g. https://store.com/collections/men'); return; }
-        if (!/^https?:\/\//i.test(url)) { alert('লিংকটা http:// বা https:// দিয়ে শুরু হওয়া দরকার।'); return; }
+        if (!url) { alert('Enter a source URL, such as https://store.com/collections/men.'); return; }
+        if (!/^https?:\/\//i.test(url)) { alert('The URL must begin with http:// or https://.'); return; }
 
+        state.fetchFailed = false;
         state.url = url;
         state.origin = extractOrigin(url);
         state.stop = false;
@@ -155,15 +180,16 @@
         showProgress(Math.min(95, page * 5), 'Fetching page ' + page + '…');
         $('#wpi-busy-label').text('Fetching page ' + page + '…');
 
-        $.post(wpi_admin.ajax_url, {
-            action: 'wpi_fetch_products',
-            nonce: wpi_admin.nonce,
+        $.post(alamin_pi_admin.ajax_url, {
+            action: 'alamin_pi_fetch_products',
+            nonce: alamin_pi_admin.nonce,
             url: state.url,
             page: page,
             deep: $('#wpi-deep').is(':checked') ? 1 : 0
         }).done(function (res) {
             if (!res || !res.success) {
                 var msg = (res && res.data && res.data.message) ? res.data.message : 'Fetch failed. Check the link and try again.';
+                state.fetchFailed = true;
                 showSummary('<strong>Error:</strong> ' + esc(msg), 'notice-error');
                 finishFetch();
                 return;
@@ -180,10 +206,11 @@
             $('#wpi-count').text(state.products.length);
 
             var max = parseInt(d.max_page, 10) || 0;
-            if (max > page) { fetchPage(page + 1); return; }
+            if (max > page && page < 60) { fetchPage(page + 1); return; }
             if (d.has_more && page < 60) { fetchPage(page + 1); return; }
             finishFetch();
         }).fail(function () {
+            state.fetchFailed = true;
             showSummary('<strong>Network error</strong> — could not reach the site. Try again.', 'notice-error');
             finishFetch();
         });
@@ -196,13 +223,14 @@
         $('#wpi-busy-label').text('');
 
         if (!state.products.length) {
-            $('#wpi-empty').show();
+            $('#wpi-empty').toggle(!state.fetchFailed);
             $('#wpi-results').hide();
             return;
         }
 
         renderTable();
         $('#wpi-results').show();
+        if (state.fetchFailed) { return; }
         showSummary(
             'Found <strong>' + state.products.length + '</strong> product(s) in this category from a <strong>' +
             platformLabel(state.platform) + '</strong> store. Only products of the pasted category are listed.' +
@@ -313,11 +341,11 @@
         });
 
         $.ajax({
-            url: wpi_admin.ajax_url,
+            url: alamin_pi_admin.ajax_url,
             method: 'POST',
             data: {
-                action: 'wpi_import_products_batch',
-                nonce: wpi_admin.nonce,
+                action: 'alamin_pi_import_products_batch',
+                nonce: alamin_pi_admin.nonce,
                 products: JSON.stringify(batch),
                 status: status,
                 skip_dup: skipDup,
@@ -382,11 +410,11 @@
         $('#wpi-busy-label').text('');
 
         var s = state.stats;
-        var msg = 'Import finished. <strong>Imported:</strong> ' + s.imported +
+        var msg = (state.stop ? 'Import stopped. <strong>Imported:</strong> ' : 'Import finished. <strong>Imported:</strong> ') + s.imported +
             (s.linked ? ' &nbsp;|&nbsp; <strong>Linked (multi-category):</strong> ' + s.linked : '') +
             ' &nbsp;|&nbsp; <strong>Skipped (duplicate):</strong> ' + s.skipped +
             ' &nbsp;|&nbsp; <strong>Failed:</strong> ' + s.failed +
-            (state.mode === 'site' ? ' — ক্যাটাগরি অটো তৈরি হয়েছে (ছবি সহ, যেগুলোতে ছিল)।' : '') +
+            (state.mode === 'site' ? ' Categories and available category images have been imported.' : '') +
             ' Go to <strong>Products</strong> in the WooCommerce menu to review them.';
         showSummary(msg, s.failed ? 'notice-warning' : 'notice-success');
 
@@ -401,9 +429,9 @@
         showProgress(8, 'Scanning the site for categories…');
         $('#wpi-busy-label').text('Scanning the site for categories…');
 
-        $.post(wpi_admin.ajax_url, {
-            action: 'wpi_fetch_site_categories',
-            nonce: wpi_admin.nonce,
+        $.post(alamin_pi_admin.ajax_url, {
+            action: 'alamin_pi_fetch_site_categories',
+            nonce: alamin_pi_admin.nonce,
             url: state.url
         }).done(function (res) {
             if (!res || !res.success) {
@@ -432,7 +460,7 @@
             $('#wpi-busy-label').text('');
             showSummary(
                 'Found <strong>' + state.categories.length + '</strong> category/collection on a <strong>' +
-                platformLabel(state.platform) + '</strong> store. Select the categories and click <strong>Import all products</strong> — ক্যাটাগরি (ছবি সহ) ও সব প্রোডাক্ট অটো ইমপোর্ট হবে।'
+                platformLabel(state.platform) + '</strong> store. Select the categories and click <strong>Import all products</strong> to create categories, download available category images, and import their products.'
             );
         }).fail(function () {
             showSummary('<strong>Network error</strong> — could not reach the site.', 'notice-error');
@@ -502,7 +530,7 @@
 
     $('#wpi-import-site').on('click', function () {
         var selected = visibleCategories().filter(function (c) { return c._checked && c._state === 'new'; });
-        if (!selected.length) { alert('কমপক্ষে একটা ক্যাটাগরি বেছে নিন।'); return; }
+        if (!selected.length) { alert('Select at least one category.'); return; }
 
         var totalProducts = selected.reduce(function (sum, c) { return sum + (parseInt(c.count, 10) || 0); }, 0);
         if (!confirm('Import all products from ' + selected.length + ' category(ies)' +
@@ -530,9 +558,9 @@
         $('#wpi-busy-label').text('Preparing: ' + c.title);
         setCatState(c._id, 'importing', 'Preparing category…');
 
-        $.post(wpi_admin.ajax_url, {
-            action: 'wpi_prepare_site_category',
-            nonce: wpi_admin.nonce,
+        $.post(alamin_pi_admin.ajax_url, {
+            action: 'alamin_pi_prepare_site_category',
+            nonce: alamin_pi_admin.nonce,
             origin: state.origin,
             category: JSON.stringify(c)
         }).done(function (res) {
@@ -595,11 +623,11 @@
         $('#wpi-busy-label').text(cat.title + ': ' + (pIndex + 1) + '-' + pEnd + '/' + pTotal);
 
         $.ajax({
-            url: wpi_admin.ajax_url,
+            url: alamin_pi_admin.ajax_url,
             method: 'POST',
             data: {
-                action: 'wpi_import_products_batch',
-                nonce: wpi_admin.nonce,
+                action: 'alamin_pi_import_products_batch',
+                nonce: alamin_pi_admin.nonce,
                 products: JSON.stringify(batch),
                 status: status,
                 skip_dup: skipDup,
